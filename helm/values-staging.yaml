@@ -1,0 +1,16 @@
+env:
+  ENVIRONMENT: staging
+
+image:
+  tag: "1.0.0"
+
+ingress:
+  hosts:
+    - host: hello-platform.staging.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: hello-platform-staging-tls
+      hosts:
+        - hello-platform.staging.example.com
