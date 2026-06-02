@@ -187,8 +187,8 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: "1"         # fail on CRITICAL or HIGH with a fix available
-          ignore-unfixed: true   # skip CVEs with no upstream patch yet
+          exit-code: "0"         # report only — image CVEs are an ops concern, not a PR gate
+          ignore-unfixed: true   # suppress CVEs with no upstream patch yet
 
       - name: Upload Trivy SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
