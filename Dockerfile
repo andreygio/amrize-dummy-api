@@ -1,20 +1,27 @@
-FROM python:3.13-slim
+# Builder — has pip and shell; not shipped in the final image
+FROM cgr.dev/chainguard/python:latest-dev AS builder
 
 WORKDIR /app
 
-RUN addgroup --system app && adduser --system --ingroup app app
-
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /app/venv && \
+    /app/venv/bin/pip install --no-cache-dir -r requirements.txt
 
+# Runtime — CVE-free, no shell, no pip; runs as nonroot (uid 65532)
+FROM cgr.dev/chainguard/python:latest
+
+WORKDIR /app
+
+COPY --from=builder /app/venv /app/venv
 COPY app/ ./app/
-
-USER app
-
-EXPOSE 8080
 
 ENV APPLICATION_NAME=hello-platform \
     ENVIRONMENT=dev \
-    VERSION=1.0.0
+    VERSION=1.0.0 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "app.main:app"]
+EXPOSE 8080
+
+ENTRYPOINT ["/app/venv/bin/gunicorn", "--bind", "0.0.0.0:8080", \
+            "--workers", "2", "--threads", "4", "app.main:app"]

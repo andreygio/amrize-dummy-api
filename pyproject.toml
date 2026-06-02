@@ -18,6 +18,7 @@ addopts = "--cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under
 [tool.coverage.run]
 source = ["app"]
 omit = ["app/__init__.py"]
+relative_files = true
 
 [tool.coverage.report]
 show_missing = true
