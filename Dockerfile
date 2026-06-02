@@ -1,5 +1,6 @@
 # Builder — has pip and shell; not shipped in the final image
-FROM cgr.dev/chainguard/python:3.13-dev AS builder
+# hadolint ignore=DL3007
+FROM cgr.dev/chainguard/python:latest-dev AS builder
 
 WORKDIR /app
 
@@ -8,7 +9,8 @@ RUN python -m venv /app/venv && \
     /app/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 # Runtime — CVE-free, no shell, no pip; runs as nonroot (uid 65532)
-FROM cgr.dev/chainguard/python:3.13
+# hadolint ignore=DL3007
+FROM cgr.dev/chainguard/python:latest
 
 WORKDIR /app
 
