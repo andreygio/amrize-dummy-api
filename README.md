@@ -12,7 +12,7 @@ A minimal, stateless Flask API that returns application metadata as JSON. Built 
 |---|---|---|
 | Application | Python 3.13 + Flask | HTTP API serving two endpoints |
 | Runtime | Gunicorn | Production WSGI server with multi-worker/thread support |
-| Container | Docker (python:3.13-slim) | Reproducible, minimal image |
+| Container | Docker — Chainguard Python (multi-stage) | CVE-free, minimal runtime image; no shell or pip in production |
 | Kubernetes packaging | Helm v3 | Parameterised manifests for multi-environment GitOps |
 | TLS | NGINX Ingress + cert-manager | HTTPS termination outside the application |
 | PR pipeline | GitHub Actions (`code-review.yml`) | Linting, type checking, tests, security scans, Helm validation |
@@ -71,7 +71,7 @@ Triggered on every pull request to `main` or `develop`. All jobs run in parallel
 | `type-check` | mypy (strict) | Missing annotations or type errors |
 | `static-analysis` | Bandit + pip-audit | Security findings (SARIF → GitHub Security tab) |
 | `test` | pytest + pytest-cov | Test failures or coverage < 80% |
-| `build` | Docker Buildx + Trivy | CRITICAL/HIGH CVEs in the image |
+| `build` | Docker Buildx + Trivy | Never blocks — scans and uploads SARIF to GitHub Security tab; CVE management is a separate ops concern |
 | `helm-validate` | helm lint × 3 + kubeconform | Invalid chart or manifests against K8s 1.28 schema |
 | `argocd-diff` | argocd app diff | Informational only — posts diff to job summary |
 
@@ -231,6 +231,9 @@ Terminating TLS in the app would require mounting cert files, managing rotation,
 **ConfigMap for environment variables**
 Application configuration is injected via a Kubernetes ConfigMap rather than baked into the image or passed as raw `--set` flags. This keeps the image environment-agnostic and provides a clear audit trail of what configuration was applied to which deployment. The deployment includes a `checksum/config` annotation so pods automatically roll when the ConfigMap changes.
 
+**Chainguard Python as the base image**
+The Dockerfile uses a two-stage build: a `latest-dev` builder stage (has pip and shell, never shipped) and a `latest` runtime stage (no shell, no pip, no package manager). Chainguard rebuilds these images continuously against their CVE database, so the runtime image is CVE-free at the point of each build. The non-root user (`nonroot`, UID 65532) is built into the image — no manual user creation needed. `PYTHONDONTWRITEBYTECODE=1` prevents Python from attempting to write `.pyc` files to the read-only filesystem.
+
 **GHCR as the container registry**
 GitHub Container Registry requires no additional secrets — `GITHUB_TOKEN` is sufficient and is automatically scoped to the repository. The build pipeline uses a short-SHA tag (`sha-<7chars>`) for immutable traceability and a `latest` tag for convenience. The SHA tag is written back to `helm/values.yaml` by the build pipeline so ArgoCD always deploys the exact commit that triggered the build.
 
@@ -241,11 +244,11 @@ The Helm chart and application code live in the same repository. The build pipel
 
 | Decision | Upside | Tradeoff accepted |
 |---|---|---|
-| Single-stage Dockerfile | Simplicity | Slightly larger image than a multi-stage build; acceptable for a Python app with no compiled artefacts |
-| `python:3.13-slim` base | Small attack surface, fast pulls | No build tools if native extensions are ever added |
+| Chainguard multi-stage build | CVE-free runtime, no shell or pip in prod | `latest` tag is mutable; pin to a digest via Renovate for full reproducibility |
 | Synchronous Gunicorn workers | Easy reasoning, no async complexity | Would need to switch to Uvicorn workers if async endpoints were added |
 | Let's Encrypt via cert-manager | Free, automated | Requires a public DNS record and outbound HTTP-01 challenge; not suitable for air-gapped clusters without DNS-01 |
 | ConfigMap for all env vars | Simple, visible | Secrets (API keys, DB passwords) must use `Secret` objects — ConfigMap is not suitable for sensitive values |
+| Trivy as report-only in PR pipeline | Never blocks merges on base-image CVEs Chainguard hasn't patched yet | Findings require a separate ops process to act on |
 | Single-repo GitOps | Less operational overhead | Automated tag-bump commits appear in app git history |
 
 ### Reusable platform capabilities
@@ -256,7 +259,7 @@ The following elements are good candidates to standardize across an organization
 
 - **CI/CD pipeline templates** — the two GitHub Actions workflows (PR checks and build-push) are generic enough to be shared as reusable workflows (`workflow_call`). Teams reference them by version rather than copying YAML.
 
-- **Non-root container pattern** — the `addgroup/adduser` + `USER app` + `runAsNonRoot: true` combination should be enforced org-wide via OPA Gatekeeper or Kyverno, not left to individual teams.
+- **Non-root container pattern** — using a base image with a built-in nonroot user (Chainguard's `nonroot`, UID 65532) combined with `runAsNonRoot: true` should be enforced org-wide via OPA Gatekeeper or Kyverno, not left to individual teams.
 
 - **`readOnlyRootFilesystem: true` + dropped capabilities** — a platform-level PodSecurity admission policy prevents teams from accidentally shipping over-privileged containers.
 
@@ -269,16 +272,17 @@ The following elements are good candidates to standardize across an organization
 ### Cost and security reasoning
 
 **Cost**
-- The default resource request (50m CPU / 64Mi memory) is intentionally conservative for a metadata API. This avoids over-provisioning cluster capacity for a low-traffic service.
+- The default resource request (50m CPU / 64Mi memory / 64Mi ephemeral-storage) is intentionally conservative for a metadata API. This avoids over-provisioning cluster capacity for a low-traffic service.
 - Production HPA scales from 3–10 replicas at 70% CPU, meaning the cluster only pays for extra capacity under real load.
 - `IfNotPresent` pull policy avoids redundant registry egress on pod restarts.
 - GHA layer caching (`type=gha`) significantly reduces build times for repeated merges.
 
 **Security**
-- The container runs as a non-root system user (UID 999) with no shell, limiting blast radius if the process is compromised.
-- `readOnlyRootFilesystem: true` prevents a compromised process from writing malicious files to the container filesystem.
-- All Linux capabilities are dropped (`capabilities.drop: [ALL]`). This service requires none.
-- `allowPrivilegeEscalation: false` closes the `setuid`/`setgid` escalation path.
+- The runtime image (Chainguard Python) contains no shell, no pip, and no package manager — an attacker with code execution has no standard tools to work with.
+- The container runs as `nonroot` (UID 65532), built into the Chainguard image — no manual user creation required.
+- `readOnlyRootFilesystem: true` is enforced; the only writable path is `/tmp` mounted as an `emptyDir` capped at 64Mi for Gunicorn's worker heartbeat files.
+- All Linux capabilities are dropped (`capabilities.drop: [ALL]`) and `allowPrivilegeEscalation: false` is set.
+- `ephemeral-storage` limits (128Mi) prevent the container's writable layer from consuming unbounded node disk.
 - TLS is enforced end-to-end from the cluster edge; internal traffic stays on the private cluster network.
 - Dependency surface is minimal: two runtime packages (`flask`, `gunicorn`) with pinned versions reduce the supply-chain attack surface.
 - Gitleaks scans the full commit history on every PR; Bandit and Trivy results are uploaded to the GitHub Security tab.
@@ -286,9 +290,6 @@ The following elements are good candidates to standardize across an organization
 ---
 
 ## Limitations & Future Improvements
-
-**Multi-stage Docker build**
-The current Dockerfile is single-stage. A multi-stage build would separate the `pip install` layer from the final runtime image, producing a smaller artifact with no build tooling present in production.
 
 **Structured logging**
 The application relies on Flask/Gunicorn default output. In a real service, logs would be emitted as JSON (using `python-json-logger` or structlog), with `correlation_id`, `environment`, `version`, and `application` fields on every line — making them joinable with distributed traces and queryable in a log aggregation platform.
