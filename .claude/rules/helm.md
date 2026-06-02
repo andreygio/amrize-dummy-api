@@ -28,7 +28,7 @@ Do not weaken these values:
 ```yaml
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 999            # matches the 'app' user in the Dockerfile
+  runAsUser: 65532          # Chainguard nonroot user (built into the base image)
 
 securityContext:
   allowPrivilegeEscalation: false
