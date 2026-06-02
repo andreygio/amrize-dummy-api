@@ -55,7 +55,7 @@ autoscaling:
 podAnnotations: {}
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 65532  # Chainguard nonroot user
+  runAsUser: 65532 # Chainguard nonroot user
 securityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
